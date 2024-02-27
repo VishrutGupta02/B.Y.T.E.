@@ -1,0 +1,166 @@
+// Import required modules
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
+const mongoose = require('mongoose');
+
+// Create an instance of Express
+const app = express();
+
+// Connect to MongoDB
+mongoose.connect('mongodb://localhost/poetry_api', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
+const db = mongoose.connection;
+db.on('error', console.error.bind(console, 'MongoDB connection error:'));
+db.once('open', () => {
+  console.log('Connected to MongoDB');
+});
+
+// Define the User schema
+const userSchema = new mongoose.Schema({
+  name: String,
+  email: String,
+  password: String,
+});
+const User = mongoose.model('User', userSchema);
+
+// Define the Poem schema
+const poemSchema = new mongoose.Schema({
+  poem: String,
+  author: String,
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+});
+const Poem = mongoose.model('Poem', poemSchema);
+
+// Middleware to parse JSON requests
+app.use(express.json());
+
+// Register endpoint
+app.post('/auth/register', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create a new user
+    const newUser = new User({ name, email, password: hashedPassword });
+    await newUser.save();
+
+    return res.status(201).json({ message: 'User registered successfully' });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Login endpoint
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Check if user exists
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Check if password is correct
+    const passwordMatch = await bcrypt.compare(password, user.password);
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Generate access and refresh tokens
+    const accessToken = jwt.sign({ userId: user._id }, 'secretKey', { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ userId: user._id }, 'refreshSecretKey', { expiresIn: '7d' });
+
+    return res.status(200).json({ access: accessToken, refresh: refreshToken });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Middleware to verify access token
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ message: 'Access token not provided' });
+  }
+
+  jwt.verify(token, 'secretKey', (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: 'Invalid access token' });
+    }
+
+    req.user = user;
+    next();
+  });
+};
+
+// Get user details endpoint
+app.get('/auth/user-details', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    return res.status(200).json({
+      id: user._id,
+      email: user.email,
+      name: user.name,
+      number: user.number,
+      role: user.role,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Get poems endpoint
+app.get('/poem/get', authenticateToken, async (req, res) => {
+  try {
+    const poems = await Poem.find({ user: req.user.userId });
+    return res.status(200).json(poems);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Create poem endpoint
+app.post('/poem/create', authenticateToken, async (req, res) => {
+  try {
+    const { poem, author } = req.body;
+
+    // Create a new poem
+    const newPoem = new Poem({ poem, author, user: req.user.userId });
+    await newPoem.save();
+
+    return res.status(201).json({ message: 'Poem created successfully' });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Start the server
+app.listen(8002, () => {
+  console.log('Server started on port 8002');
+});
